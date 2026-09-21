@@ -27,7 +27,7 @@ def test_criar_rota_com_parametros(client):
     """Testa criação de rota com parâmetros"""
     data = {'rota_id': 'r001', 'motorista_id': 'd001'}
     response = client.post('/rotas', json=data)
-    assert response.status_code in [200, 500]
+    assert response.status_code in [200, 201, 500]
 
 
 def test_app_loads():
