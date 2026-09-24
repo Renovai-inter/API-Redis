@@ -1,0 +1,31 @@
+name: Build
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+    
+    - name: Check Python syntax
+      run: |
+        python -m py_compile main.py tests/test_main.py
+    
+    - name: Verify application loads
+      run: |
+        python -c "from main import app; print('✓ Build OK')"
