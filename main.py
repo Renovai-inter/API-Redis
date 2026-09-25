@@ -1,9 +1,16 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from dotenv import load_dotenv
 import redis
 import json
+import threading
+import time
 from datetime import datetime, timedelta
 import os
+
+load_dotenv()
+
+from sincronizador import SincronizadorRotasPostgreSQL
 
 app = Flask(__name__)
 CORS(app)
@@ -11,13 +18,43 @@ CORS(app)
 redis_host = os.getenv('REDIS_HOST', 'localhost')
 redis_port = int(os.getenv('REDIS_PORT', 6379))
 redis_password = os.getenv('REDIS_PASSWORD', '')
+intervalo_sincronizacao = int(os.getenv('INTERVALO_SINCRONIZACAO', 300))
 
 try:
-    r = redis.Redis(host=redis_host, port=redis_port, password=redis_password, decode_responses=True)
+    r = redis.Redis(host=redis_host, port=redis_port, password=redis_password, protocol=2, decode_responses=True)
     r.ping()
 except Exception as e:
     print(f"Erro ao conectar Redis: {e}")
     r = None
+
+lock_sincronizacao = threading.Lock()
+
+def executar_sincronizacao(rota_id=None):
+    with lock_sincronizacao:
+        sincronizador = None
+        try:
+            sincronizador = SincronizadorRotasPostgreSQL()
+            if rota_id:
+                sincronizador.sincronizar_rota_finalizada(rota_id)
+            else:
+                sincronizador.processar_todas_rotas_finalizadas()
+        except Exception as e:
+            print(f"Erro na sincronizacao: {e}")
+        finally:
+            if sincronizador:
+                sincronizador.fechar()
+
+def loop_sincronizacao():
+    try:
+        sincronizador = SincronizadorRotasPostgreSQL()
+        sincronizador._criar_tabelas()
+        sincronizador.fechar()
+    except Exception as e:
+        print(f"Erro ao criar tabelas: {e}")
+    
+    while True:
+        executar_sincronizacao()
+        time.sleep(intervalo_sincronizacao)
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -164,6 +201,7 @@ def finalizar_rota(rota_id):
     r.hset(sessao_key, 'timestamp_finalizacao', datetime.now().isoformat())
     
     sessao_atualizada = r.hgetall(sessao_key)
+    threading.Thread(target=executar_sincronizacao, args=(rota_id,), daemon=True).start()
     return jsonify(sessao_atualizada), 200
 
 @app.route('/rotas/<rota_id>/fila', methods=['GET'])
@@ -233,6 +271,8 @@ def nao_encontrado(error):
 @app.errorhandler(500)
 def erro_interno(error):
     return jsonify({'erro': 'Erro interno do servidor'}), 500
+
+threading.Thread(target=loop_sincronizacao, daemon=True).start()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
