@@ -15,17 +15,30 @@ from sincronizador import SincronizadorRotasPostgreSQL
 app = Flask(__name__)
 CORS(app)
 
-redis_host = os.getenv('REDIS_HOST', 'localhost')
-redis_port = int(os.getenv('REDIS_PORT', 6379))
-redis_password = os.getenv('REDIS_PASSWORD', '')
 intervalo_sincronizacao = int(os.getenv('INTERVALO_SINCRONIZACAO', 300))
 
-try:
-    r = redis.Redis(host=redis_host, port=redis_port, password=redis_password, protocol=2, decode_responses=True)
-    r.ping()
-except Exception as e:
-    print(f"Erro ao conectar Redis: {e}")
-    r = None
+r = None
+for redis_url in ([os.getenv('REDIS_URL')] if os.getenv('REDIS_URL') else []) + [None]:
+    client = None
+    try:
+        options = dict(protocol=2, decode_responses=True, socket_connect_timeout=5, socket_timeout=5)
+        if redis_url:
+            client = redis.Redis.from_url(redis_url, **options)
+        else:
+            client = redis.Redis(
+                host=os.getenv('REDIS_HOST', 'localhost'),
+                port=int(os.getenv('REDIS_PORT', '6379')),
+                password=os.getenv('REDIS_PASSWORD') or None,
+                **options,
+            )
+        client.ping()
+        r = client
+        break
+    except (redis.RedisError, ValueError):
+        if client is not None:
+            client.close()
+        print('Falha ao conectar via REDIS_URL; tentando Redis local.' if redis_url
+              else 'Erro ao conectar Redis local.')
 
 lock_sincronizacao = threading.Lock()
 
@@ -51,7 +64,7 @@ def loop_sincronizacao():
         sincronizador.fechar()
     except Exception as e:
         print(f"Erro ao criar tabelas: {e}")
-    
+
     while True:
         executar_sincronizacao()
         time.sleep(intervalo_sincronizacao)
