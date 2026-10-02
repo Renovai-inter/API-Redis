@@ -19,12 +19,17 @@ class RedisConnectionTest(unittest.TestCase):
                     local.ping.side_effect = redis.ConnectionError('unavailable')
                 with patch.dict(os.environ, env, clear=True), \
                      patch('redis.Redis.from_url', return_value=remote) as from_url, \
-                     patch('redis.Redis', return_value=local) as constructor:
+                     patch('redis.Redis', return_value=local) as constructor, \
+                     patch('dotenv.load_dotenv'), \
+                     patch('threading.Thread') as thread, \
+                     patch.dict('sys.modules', sincronizador=MagicMock()):
                     # Patch the class method on the mocked constructor used by main.
                     constructor.from_url = from_url
                     if scenario == 'invalid':
                         from_url.side_effect = ValueError('invalid URL')
                     module = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'main.py'))
+                    self.assertEqual(module['intervalo_sincronizacao'], 300)
+                    thread.assert_called_once_with(target=module['loop_sincronizacao'], daemon=True)
                     expected = remote if scenario == 'url' else None if scenario == 'both_fail' else local
                     self.assertIs(module['r'], expected)
                     self.assertEqual(from_url.call_count, 0 if scenario in ('missing', 'empty') else 1)
@@ -33,7 +38,7 @@ class RedisConnectionTest(unittest.TestCase):
                     else:
                         constructor.assert_called_once_with(
                             host='localhost', port=6379, password=None,
-                            decode_responses=True, socket_connect_timeout=5, socket_timeout=5,
+                            protocol=2, decode_responses=True, socket_connect_timeout=5, socket_timeout=5,
                         )
                     if scenario in ('unreachable', 'both_fail'):
                         remote.close.assert_called_once()
