@@ -11,34 +11,14 @@ import os
 load_dotenv()
 
 from sincronizador import SincronizadorRotasPostgreSQL
+from redis_connection import conectar_redis
 
 app = Flask(__name__)
 CORS(app)
 
 intervalo_sincronizacao = int(os.getenv('INTERVALO_SINCRONIZACAO', 300))
 
-r = None
-for redis_url in ([os.getenv('REDIS_URL')] if os.getenv('REDIS_URL') else []) + [None]:
-    client = None
-    try:
-        options = dict(protocol=2, decode_responses=True, socket_connect_timeout=5, socket_timeout=5)
-        if redis_url:
-            client = redis.Redis.from_url(redis_url, **options)
-        else:
-            client = redis.Redis(
-                host=os.getenv('REDIS_HOST', 'localhost'),
-                port=int(os.getenv('REDIS_PORT', '6379')),
-                password=os.getenv('REDIS_PASSWORD') or None,
-                **options,
-            )
-        client.ping()
-        r = client
-        break
-    except (redis.RedisError, ValueError):
-        if client is not None:
-            client.close()
-        print('Falha ao conectar via REDIS_URL; tentando Redis local.' if redis_url
-              else 'Erro ao conectar Redis local.')
+r = conectar_redis()
 
 lock_sincronizacao = threading.Lock()
 
@@ -75,9 +55,9 @@ def health():
         try:
             r.ping()
             return jsonify({'status': 'ok', 'redis': 'connected'}), 200
-        except:
-            return jsonify({'status': 'ok', 'redis': 'disconnected'}), 200
-    return jsonify({'status': 'error'}), 500
+        except redis.RedisError:
+            return jsonify({'status': 'error', 'redis': 'disconnected'}), 503
+    return jsonify({'status': 'error', 'redis': 'disconnected'}), 503
 
 @app.route('/rotas', methods=['POST'])
 def criar_rota():

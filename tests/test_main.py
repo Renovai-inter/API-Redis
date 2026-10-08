@@ -13,7 +13,7 @@ def client():
 def test_health(client):
     """Testa endpoint /health"""
     response = client.get('/health')
-    assert response.status_code in [200, 500]
+    assert response.status_code in [200, 503]
     assert 'status' in response.get_json()
 
 

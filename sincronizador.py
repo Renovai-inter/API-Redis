@@ -19,17 +19,13 @@ import uuid
 
 import uuid
 from dotenv import load_dotenv
+from redis_connection import conectar_redis
 
 load_dotenv()
 
 # ============================================================================
 # CONFIGURAÇÃO
 # ============================================================================
-
-# Redis
-REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
-REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
-REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', '')
 
 # PostgreSQL (Neon - usa URL de conexão)
 POSTGRES_URL = os.getenv(
@@ -61,14 +57,9 @@ class SincronizadorRotasPostgreSQL:
     def _conectar_redis(self) -> None:
         """Conecta ao Redis"""
         try:
-            self.redis_client = redis.Redis(
-                host=REDIS_HOST,
-                port=REDIS_PORT,
-                password=REDIS_PASSWORD,
-                protocol=2,
-                decode_responses=True
-            )
-            self.redis_client.ping()
+            self.redis_client = conectar_redis()
+            if self.redis_client is None:
+                raise redis.ConnectionError('Redis indisponível')
             logger.info("✓ Conectado ao Redis")
         except Exception as e:
             logger.error(f"✗ Erro ao conectar ao Redis: {e}")

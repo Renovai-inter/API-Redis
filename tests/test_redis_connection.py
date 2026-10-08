@@ -8,6 +8,33 @@ import redis
 
 
 class RedisConnectionTest(unittest.TestCase):
+    def test_health_reports_redis_unavailable(self):
+        with patch('redis_connection.conectar_redis', return_value=None), \
+             patch('dotenv.load_dotenv'), patch('threading.Thread'), \
+             patch.dict('sys.modules', sincronizador=MagicMock()):
+            module = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'main.py'))
+        app = module['app']
+        with app.test_client() as client:
+            self.assertEqual(client.get('/health').status_code, 503)
+            connected = MagicMock()
+            module['health'].__globals__['r'] = connected
+            self.assertEqual(client.get('/health').status_code, 200)
+            connected.ping.side_effect = redis.ConnectionError('unavailable')
+            self.assertEqual(client.get('/health').status_code, 503)
+
+    def test_synchronizer_uses_shared_connection(self):
+        with patch('dotenv.load_dotenv'):
+            module = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'sincronizador.py'))
+        cls = module['SincronizadorRotasPostgreSQL']
+        with patch('redis_connection.conectar_redis') as shared:
+            cls._conectar_redis.__globals__['conectar_redis'] = shared
+            sync = cls.__new__(cls)
+            sync._conectar_redis()
+            self.assertIs(sync.redis_client, shared.return_value)
+            shared.return_value = None
+            with self.assertRaises(redis.ConnectionError):
+                sync._conectar_redis()
+
     def test_connection_selection(self):
         for scenario in ('url', 'missing', 'empty', 'invalid', 'unreachable', 'both_fail'):
             with self.subTest(scenario=scenario):
