@@ -37,8 +37,20 @@ o `.gitignore`, publica uma imagem identificada pelo SHA do commit e aguarda
 o rollout. Não há `.dockerignore`. O mesmo script pode ser executado manualmente
 com `AWS_REGION` e `EKS_CLUSTER_NAME` definidos.
 
-O Service é interno na porta 80. Use `kubectl port-forward -n renovai-api
-service/redis-api-service 5000:80` para testar `/health`.
+O Service usa um Network Load Balancer público na porta 80, seguindo a configuração
+da API Spring. Após o deploy, aguarde o endereço externo aparecer:
+
+```bash
+kubectl get service redis-api-service -n renovai-api -w
+```
+
+Use o hostname exibido em `EXTERNAL-IP` para chamar `http://HOSTNAME/health`
+e as demais rotas. Se continuar `<pending>`, consulte
+`kubectl describe service redis-api-service -n renovai-api` para verificar os eventos
+de provisionamento. O cluster precisa permitir a criação do NLB em subnets públicas.
+
+O acesso é HTTP, sem TLS e sem autenticação nesta etapa; qualquer pessoa com acesso
+ao endereço pode chamar as rotas. O NLB gera cobrança adicional na AWS.
 Mantenha uma réplica e um worker enquanto o sincronizador executar junto com a API.
 
 Solucao tecnologica desenvolvida como projeto interdisciplinar pelos alunos do 1o e 2o ano do Instituto J&F Germinatech. O projeto integra disciplinas de backend, frontend, dados, mobile, inteligencia artificial, UX e gestao de projetos em uma unica plataforma coesa.

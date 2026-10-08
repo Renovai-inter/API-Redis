@@ -66,10 +66,13 @@ kind: Service
 metadata:
   name: redis-api-service
   namespace: renovai-api
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
   labels:
     app: redis-api
 spec:
-  type: ClusterIP
+  type: LoadBalancer
   selector:
     app: redis-api
   ports:
