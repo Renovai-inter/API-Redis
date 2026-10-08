@@ -1,0 +1,78 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: renovai-api
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-api
+  namespace: renovai-api
+spec:
+  replicas: 1
+  # ponytail: Recreate evita sincronizadores concorrentes durante o deploy; há breve indisponibilidade.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: redis-api
+  template:
+    metadata:
+      labels:
+        app: redis-api
+    spec:
+      terminationGracePeriodSeconds: 150
+      containers:
+        - name: redis-api
+          image: "${ECR_IMAGE}"
+          ports:
+            - name: http
+              containerPort: 5000
+          env:
+            - name: INTERVALO_SINCRONIZACAO
+              value: "300"
+            - name: TZ
+              value: America/Sao_Paulo
+          envFrom:
+            - secretRef:
+                name: redis-api-secrets
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 6
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 6
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-api-service
+  namespace: renovai-api
+  labels:
+    app: redis-api
+spec:
+  type: ClusterIP
+  selector:
+    app: redis-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

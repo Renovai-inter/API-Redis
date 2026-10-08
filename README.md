@@ -1,5 +1,46 @@
 # Projeto Interdisciplinar - Instituto J&F Germinatech
 
+## Deploy automático AWS (GitHub Actions / EKS)
+
+A pipeline `.github/workflows/prod.yml` executa testes, constrói a imagem,
+publica no ECR e atualiza o EKS a cada push na `main`. Também pode ser
+acionada em **Actions > Deploy to AWS EKS > Run workflow**, selecionando `main`.
+Um teste que falha interrompe o job antes de configurar as credenciais AWS.
+
+Antes do primeiro deploy, crie o repositório ECR `renovai-api-redis` e configure
+o Secret Kubernetes `redis-api-secrets` no namespace `renovai-api`,
+usando `orchestration/secret.template.yaml`. Os bancos e provedores continuam
+externos. As credenciais das aplicações ficam no Secret Kubernetes.
+
+Configure em **Settings > Secrets and variables > Actions**, nos dois repositórios:
+
+| Secret | Valor |
+|---|---|
+| `AWS_ACCESS_KEY_ID` | Credencial AWS com acesso ao ECR e EKS |
+| `AWS_SECRET_ACCESS_KEY` | Chave secreta correspondente |
+| `AWS_SESSION_TOKEN` | Obrigatório para credenciais temporárias, como AWS Academy |
+| `AWS_REGION` | Região do cluster, igual à usada pela API Spring |
+| `EKS_CLUSTER_NAME` | Nome do mesmo cluster da API Spring |
+
+A variável `ECR_REPOSITORY` é opcional; os nomes padrão estão no workflow.
+Credenciais temporárias precisam ser atualizadas quando expirarem. Na IA, o job
+mantém o environment `prod`; suas regras de aprovação e seus Secrets continuam
+valendo.
+
+A identidade AWS usada pelo GitHub precisa ter acesso ao cluster Kubernetes e
+permissão de publicar imagens no ECR. O runner precisa alcançar o endpoint EKS;
+para um endpoint privado, use um runner com acesso à VPC. Os scripts não alteram
+permissões ou a configuração de rede do cluster.
+
+O workflow chama `orchestration/deploy.sh`. Ele gera o contexto Docker usando
+o `.gitignore`, publica uma imagem identificada pelo SHA do commit e aguarda
+o rollout. Não há `.dockerignore`. O mesmo script pode ser executado manualmente
+com `AWS_REGION` e `EKS_CLUSTER_NAME` definidos.
+
+O Service é interno na porta 80. Use `kubectl port-forward -n renovai-api
+service/redis-api-service 5000:80` para testar `/health`.
+Mantenha uma réplica e um worker enquanto o sincronizador executar junto com a API.
+
 Solucao tecnologica desenvolvida como projeto interdisciplinar pelos alunos do 1o e 2o ano do Instituto J&F Germinatech. O projeto integra disciplinas de backend, frontend, dados, mobile, inteligencia artificial, UX e gestao de projetos em uma unica plataforma coesa.
 
 ---
