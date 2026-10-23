@@ -3,8 +3,10 @@
 ## Deploy automático AWS (GitHub Actions / EKS)
 
 A pipeline `.github/workflows/prod.yml` executa testes, constrói a imagem,
-publica no ECR e atualiza o EKS a cada push na `main`. Também pode ser
-acionada em **Actions > Deploy to AWS EKS > Run workflow**, selecionando `main`.
+publica no ECR e atualiza o EKS somente ao publicar uma release estável no
+repositório (**Releases > Draft a new release > Publish release**). O deploy usa
+o commit da tag da release. Push, pull request, rascunho e pré-release não
+acionam o deploy de produção. Os workflows de CI continuam independentes.
 Um teste que falha interrompe o job antes de configurar as credenciais AWS.
 
 Antes do primeiro deploy, crie o repositório ECR `renovai-api-redis` e configure
