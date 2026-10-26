@@ -12,7 +12,6 @@ trap 'rm -rf "$TASK_DIR"' EXIT
 export KUBECONFIG="$TASK_DIR/kubeconfig"
 
 aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" --kubeconfig "$KUBECONFIG"
-kubectl rollout status deployment/aws-load-balancer-controller -n kube-system --timeout=120s
 kubectl get secret redis-api-secrets -n renovai-api >/dev/null
 aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" --region "$AWS_REGION" >/dev/null
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
@@ -37,7 +36,5 @@ assert '${ECR_IMAGE}' in manifest, "Placeholder ECR_IMAGE ausente"
 Path(sys.argv[1]).write_text(manifest.replace('${ECR_IMAGE}', os.environ["ECR_IMAGE"]))
 PY
 kubectl apply -f "$TASK_DIR/app.yaml"
-kubectl apply -f orchestration/k8s/ingress.yaml
 kubectl rollout status deployment/redis-api -n renovai-api --timeout=300s
 kubectl get pods,service -n renovai-api -l app=redis-api
-kubectl get ingress redis-api-ingress -n renovai-api

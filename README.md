@@ -39,21 +39,20 @@ o `.gitignore`, publica uma imagem identificada pelo SHA do commit e aguarda
 o rollout. Não há `.dockerignore`. O mesmo script pode ser executado manualmente
 com `AWS_REGION` e `EKS_CLUSTER_NAME` definidos.
 
-O Service usa um Network Load Balancer público na porta 80, seguindo a configuração
-da API Spring. Após o deploy, aguarde o endereço externo aparecer:
+O Service permanece interno (`ClusterIP`). O endereço público é fornecido pelo
+Nginx compartilhado, mantido em `Spring-API/orchestration/gateway`, atrás de um
+único NLB. O workflow `gateway.yml` do Spring atualiza essa infraestrutura ao
+publicar uma release estável. Os deploys das APIs não criam load balancers.
 
 ```bash
-kubectl get service redis-api-service -n renovai-api -w
+kubectl get service renovai-gateway -n renovai-api -w
 ```
 
-Use o hostname exibido em `EXTERNAL-IP` para chamar `http://HOSTNAME/health`
-e as demais rotas. Se continuar `<pending>`, consulte
-`kubectl describe service redis-api-service -n renovai-api` para verificar os eventos
-de provisionamento. O cluster precisa permitir a criação do NLB em subnets públicas.
-
-O acesso é HTTP, sem TLS e sem autenticação nesta etapa; qualquer pessoa com acesso
-ao endereço pode chamar as rotas. O NLB gera cobrança adicional na AWS.
-Mantenha uma réplica e um worker enquanto o sincronizador executar junto com a API.
+Sem certificado, use HTTP na porta 80. Com a variável `NLB_CERTIFICATE_ARN`
+configurada no Spring, use HTTPS na porta 443 e o domínio correspondente ao
+certificado ACM. Configure também CORS para a origem do frontend.
+Os Ingresses ALB antigos devem ser removidos após validar e migrar o endereço;
+remover os manifests do Git não exclui recursos existentes do cluster.
 
 Solucao tecnologica desenvolvida como projeto interdisciplinar pelos alunos do 1o e 2o ano do Instituto J&F Germinatech. O projeto integra disciplinas de backend, frontend, dados, mobile, inteligencia artificial, UX e gestao de projetos em uma unica plataforma coesa.
 
