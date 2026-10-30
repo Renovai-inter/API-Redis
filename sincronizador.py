@@ -17,7 +17,6 @@ import os
 from typing import Dict, List, Optional
 import uuid
 
-import uuid
 from dotenv import load_dotenv
 from redis_connection import conectar_redis
 
@@ -39,6 +38,28 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def _indice_parada(chave: str) -> int:
+    try:
+        return int(chave.rsplit(':', 1)[1])
+    except (IndexError, ValueError):
+        return 1 << 30
+
+
+def _uuid_ou_none(valor) -> Optional[str]:
+    """endereco_id só vai para a coluna UUID se for um UUID válido (um texto qualquer derrubaria o insert)."""
+    try:
+        return str(uuid.UUID(str(valor))) if valor else None
+    except ValueError:
+        return None
+
+
+def _data_ou_none(valor) -> Optional[datetime]:
+    try:
+        return datetime.fromisoformat(valor) if valor else None
+    except ValueError:
+        return None
 
 # ============================================================================
 # SINCRONIZADOR
@@ -114,6 +135,16 @@ class SincronizadorRotasPostgreSQL:
                     FOREIGN KEY (execucao_id) REFERENCES rota_execucoes(execucao_id) ON DELETE CASCADE
                 );
             """)
+
+            # Colunas novas (só acrescenta, não mexe no que já existe): posição da parada na
+            # viagem, o endereço da rota (rotas_enderecos.endereco_id) e a hora em que a coleta
+            # foi concluída — o RPA-neo4j usa para calcular o tempo real de cada trecho.
+            cursor.execute("""
+                ALTER TABLE rota_execucoes_paradas
+                    ADD COLUMN IF NOT EXISTS ordem INTEGER,
+                    ADD COLUMN IF NOT EXISTS endereco_id UUID,
+                    ADD COLUMN IF NOT EXISTS data_conclusao TIMESTAMP;
+            """)
             
             self.postgres_conn.commit()
             logger.info("✓ Tabelas de auditoria verificadas/criadas")
@@ -136,7 +167,7 @@ class SincronizadorRotasPostgreSQL:
             parada_keys = self.redis_client.keys(f"rota:parada:{rota_id}:*")
             paradas = []
             
-            for key in sorted(parada_keys):
+            for key in sorted(parada_keys, key=_indice_parada):
                 parada = self.redis_client.hgetall(key)
                 paradas.append(parada)
             
@@ -211,7 +242,10 @@ class SincronizadorRotasPostgreSQL:
                     float(parada.get('peso_estimado', 0)),
                     float(parada.get('peso_real', 0)) if parada.get('peso_real') else 0,
                     parada.get('status', 'PENDENTE'),
-                    parada.get('observacoes', '')
+                    parada.get('observacoes', ''),
+                    int(parada.get('id', idx)),
+                    _uuid_ou_none(parada.get('endereco_id')),
+                    _data_ou_none(parada.get('timestamp_conclusao')),
                 ))
             
             if paradas_data:
@@ -220,7 +254,8 @@ class SincronizadorRotasPostgreSQL:
                     """
                     INSERT INTO rota_execucoes_paradas (
                         parada_execucao_id, execucao_id, endereco, material,
-                        peso_estimado, peso_coletado, status, observacoes
+                        peso_estimado, peso_coletado, status, observacoes,
+                        ordem, endereco_id, data_conclusao
                     ) VALUES %s
                     """,
                     paradas_data
@@ -276,6 +311,12 @@ class SincronizadorRotasPostgreSQL:
         # Persistir em PostgreSQL
         if not self._persistir_rota_postgres(rota_id, dados):
             return False
+
+        # Já gravada: se a limpeza abaixo falhar, o próximo ciclo não grava a mesma viagem de novo.
+        try:
+            self.redis_client.hset(f"rota:sessao:{rota_id}", 'status', 'SINCRONIZADA')
+        except Exception as e:
+            logger.warning(f"⚠ Não foi possível marcar a rota {rota_id} como sincronizada: {e}")
         
         # Limpar Redis
         if not self._limpar_redis(rota_id):
@@ -304,6 +345,9 @@ class SincronizadorRotasPostgreSQL:
                 if sessao.get('status') == 'FINALIZADA':
                     if self.sincronizar_rota_finalizada(rota_id):
                         sincronizadas += 1
+                elif sessao.get('status') == 'SINCRONIZADA':
+                    # gravada no Postgres, mas a limpeza falhou antes: só limpa
+                    self._limpar_redis(rota_id)
             
             if sincronizadas > 0:
                 logger.info(f"✓ {sincronizadas} rota(s) sincronizada(s)")
