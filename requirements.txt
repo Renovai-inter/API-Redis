@@ -5,4 +5,5 @@ python-dotenv==1.0.0
 Werkzeug==2.3.7
 psycopg2-binary==2.9.11
 pytest==7.4.3
+fakeredis==2.26.2
 gunicorn==23.0.0
