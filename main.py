@@ -7,6 +7,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 import os
+import uuid
 
 load_dotenv()
 
@@ -31,6 +32,7 @@ def executar_sincronizacao(rota_id=None):
                 sincronizador.sincronizar_rota_finalizada(rota_id)
             else:
                 sincronizador.processar_todas_rotas_finalizadas()
+            sincronizador.sincronizar_dau_postgres()
         except Exception as e:
             print(f"Erro na sincronizacao: {e}")
         finally:
@@ -44,6 +46,13 @@ def _corpo():
     """Corpo JSON da requisição; sem corpo (ou inválido) vira {} em vez de erro 500."""
     return request.get_json(silent=True) or {}
 
+
+def _eh_uuid_valido(val):
+    try:
+        uuid.UUID(str(val))
+        return True
+    except (ValueError, TypeError, AttributeError):
+        return False
 
 def _indice_parada(chave):
     try:
@@ -91,6 +100,9 @@ def criar_rota():
 
     if not rota_id or not motorista_id:
         return jsonify({'erro': 'rota_id e motorista_id obrigatorios'}), 400
+
+    if r is None:
+        return jsonify({'erro': 'redis indisponivel'}), 500
 
     sessao_key = f"rota:sessao:{rota_id}"
 
@@ -333,6 +345,106 @@ def obter_stats(rota_id):
         'timestamp_inicio': sessao.get('timestamp_inicio'),
         'timestamp_atualizacao': sessao.get('timestamp_atualizacao')
     }), 200
+
+# ============================================================================
+# ENDPOINTS DE ATIVIDADE DE USUÁRIOS E DAU (BITMAP + SYNC POSTGRESQL)
+# ============================================================================
+
+@app.route('/atividade/login', methods=['POST'])
+def registrar_atividade():
+    """Registra atividade de login do usuario (cooperado ou empresa).
+    Marca o bit correspondente ao dia do mes no Bitmap Redis e enfileira
+    para sincronizacao em lote no PostgreSQL (DAU).
+    """
+    if r is None:
+        return jsonify({'erro': 'redis indisponivel'}), 503
+
+    data = _corpo()
+    tipo = str(data.get('tipo', '')).strip().lower()
+    entidade_id = str(data.get('id', '')).strip()
+
+    if tipo not in ('cooperado', 'empresa') or not _eh_uuid_valido(entidade_id):
+        return jsonify({
+            'erro': "Parametros invalidos: 'tipo' deve ser 'cooperado' ou 'empresa', e 'id' deve ser um UUID valido"
+        }), 400
+
+    hoje = datetime.now()
+    ano_mes = hoje.strftime('%Y-%m')
+    dia_idx = hoje.day - 1  # 0 a 30 (offset do bit)
+    data_iso = hoje.strftime('%Y-%m-%d')
+
+    chave_bitmap = f"atividade:{tipo}:{entidade_id}:{ano_mes}"
+    chave_pendentes = f"dau:pendentes:{data_iso}"
+
+    try:
+        pipe = r.pipeline()
+        pipe.setbit(chave_bitmap, dia_idx, 1)
+        pipe.expire(chave_bitmap, 90 * 86400)  # Mantém 90 dias de histórico
+
+        pipe.sadd(chave_pendentes, f"{tipo}:{entidade_id}")
+        pipe.expire(chave_pendentes, 3 * 86400)
+        pipe.execute()
+
+        return jsonify({
+            'status': 'ok',
+            'tipo': tipo,
+            'id': entidade_id,
+            'dia': hoje.day,
+            'mes': ano_mes,
+            'ativo': True
+        }), 200
+    except redis.RedisError as e:
+        return jsonify({'erro': f'Erro ao registrar atividade no Redis: {str(e)}'}), 500
+
+@app.route('/atividade/<tipo>/<entidade_id>', methods=['GET'])
+def obter_atividade(tipo, entidade_id):
+    """Retorna métricas de atividade de um usuário no mês (baseado no Bitmap do Redis)."""
+    if r is None:
+        return jsonify({'erro': 'redis indisponivel'}), 503
+
+    tipo = str(tipo).strip().lower()
+    if tipo not in ('cooperado', 'empresa') or not _eh_uuid_valido(entidade_id):
+        return jsonify({'erro': "Parametros invalidos: tipo deve ser 'cooperado' ou 'empresa' e id deve ser um UUID valido"}), 400
+
+    hoje = datetime.now()
+    ano_mes = request.args.get('mes') or hoje.strftime('%Y-%m')
+    dia_idx = hoje.day - 1
+
+    chave_bitmap = f"atividade:{tipo}:{entidade_id}:{ano_mes}"
+
+    try:
+        if not r.exists(chave_bitmap):
+            return jsonify({
+                'tipo': tipo,
+                'id': entidade_id,
+                'mes': ano_mes,
+                'dias_ativos_mes': 0,
+                'ativo_hoje': False
+            }), 200
+
+        dias_ativos = r.bitcount(chave_bitmap)
+        ativo_hoje = bool(r.getbit(chave_bitmap, dia_idx))
+
+        return jsonify({
+            'tipo': tipo,
+            'id': entidade_id,
+            'mes': ano_mes,
+            'dias_ativos_mes': dias_ativos,
+            'ativo_hoje': ativo_hoje
+        }), 200
+    except redis.RedisError as e:
+        return jsonify({'erro': str(e)}), 500
+
+@app.route('/atividade/sincronizar', methods=['POST'])
+def sincronizar_dau_manual():
+    """Dispara sincronização manual de DAU para o PostgreSQL (útil para testes e crons)."""
+    try:
+        sincronizador = SincronizadorRotasPostgreSQL()
+        total = sincronizador.sincronizar_dau_postgres()
+        sincronizador.fechar()
+        return jsonify({'status': 'ok', 'total_sincronizados': total}), 200
+    except Exception as e:
+        return jsonify({'erro': f'Falha na sincronizacao: {str(e)}'}), 500
 
 @app.errorhandler(404)
 def nao_encontrado(error):

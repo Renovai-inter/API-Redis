@@ -145,6 +145,31 @@ class SincronizadorRotasPostgreSQL:
                     ADD COLUMN IF NOT EXISTS endereco_id UUID,
                     ADD COLUMN IF NOT EXISTS data_conclusao TIMESTAMP;
             """)
+
+            # Tabela de historico de acessos diarios de usuarios (DAU)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS atividade_usuarios_diaria (
+                    atividade_id   UUID         DEFAULT gen_random_uuid() PRIMARY KEY,
+                    data_acesso    DATE         NOT NULL,
+                    tipo_usuario   VARCHAR(20)  NOT NULL CHECK (tipo_usuario IN ('COOPERADO', 'EMPRESA')),
+                    funcionario_id UUID,
+                    empresa_id     UUID,
+                    criado_em      TIMESTAMP    DEFAULT NOW(),
+
+                    CONSTRAINT uq_atividade_usuario_dia UNIQUE (data_acesso, tipo_usuario, funcionario_id, empresa_id)
+                );
+            """)
+
+            # Tabela de metricas consolidadas de DAU para o Data Mart e BI
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS metricas_dau (
+                    data_referencia         DATE         PRIMARY KEY,
+                    total_cooperados_ativos INTEGER      NOT NULL DEFAULT 0,
+                    total_empresas_ativas   INTEGER      NOT NULL DEFAULT 0,
+                    total_usuarios_ativos   INTEGER      NOT NULL DEFAULT 0,
+                    atualizado_em           TIMESTAMP    DEFAULT NOW()
+                );
+            """)
             
             self.postgres_conn.commit()
             logger.info("✓ Tabelas de auditoria verificadas/criadas")
@@ -384,6 +409,109 @@ class SincronizadorRotasPostgreSQL:
             logger.error(f"✗ Erro ao obter progresso: {e}")
             return None
     
+    def sincronizar_dau_postgres(self) -> int:
+        """Sincroniza registros de atividade e calcula metricas DAU no PostgreSQL a partir do Redis."""
+        if not self.redis_client or not self.postgres_conn:
+            return 0
+
+        total_processados = 0
+        try:
+            chaves_pendentes = self.redis_client.keys('dau:pendentes:*')
+            if not chaves_pendentes:
+                return 0
+
+            cursor = self.postgres_conn.cursor()
+
+            for chave in chaves_pendentes:
+                chave_str = chave.decode('utf-8') if isinstance(chave, bytes) else str(chave)
+                partes = chave_str.split(':')
+                if len(partes) < 3:
+                    continue
+                data_str = partes[2]  # YYYY-MM-DD
+                try:
+                    data_referencia = datetime.strptime(data_str, '%Y-%m-%d').date()
+                except ValueError:
+                    continue
+
+                membros = self.redis_client.smembers(chave)
+                if not membros:
+                    self.redis_client.delete(chave)
+                    continue
+
+                dados_inserir = []
+                ids_funcionarios = []
+
+                for m in membros:
+                    m_str = m.decode('utf-8') if isinstance(m, bytes) else str(m)
+                    if ':' not in m_str:
+                        continue
+                    tipo, ent_id = m_str.split(':', 1)
+                    tipo = tipo.upper()
+                    uuid_validado = _uuid_ou_none(ent_id)
+                    if not uuid_validado:
+                        continue
+
+                    if tipo == 'COOPERADO':
+                        dados_inserir.append((data_referencia, tipo, uuid_validado, None))
+                        ids_funcionarios.append(uuid_validado)
+                    elif tipo == 'EMPRESA':
+                        dados_inserir.append((data_referencia, tipo, None, uuid_validado))
+
+                if dados_inserir:
+                    query_insert = """
+                        INSERT INTO atividade_usuarios_diaria 
+                            (data_acesso, tipo_usuario, funcionario_id, empresa_id)
+                        VALUES %s
+                        ON CONFLICT (data_acesso, tipo_usuario, funcionario_id, empresa_id) DO NOTHING;
+                    """
+                    execute_values(cursor, query_insert, dados_inserir)
+
+                    if ids_funcionarios:
+                        cursor.execute("""
+                            UPDATE usuarios u
+                            SET ultimo_acesso = NOW()
+                            FROM funcionarios f
+                            WHERE f.usuario_id = u.usuario_id
+                              AND f.funcionario_id = ANY(%s::uuid[]);
+                        """, (ids_funcionarios,))
+
+                    cursor.execute("""
+                        INSERT INTO metricas_dau (
+                            data_referencia,
+                            total_cooperados_ativos,
+                            total_empresas_ativas,
+                            total_usuarios_ativos,
+                            atualizado_em
+                        )
+                        SELECT 
+                            %s,
+                            COUNT(DISTINCT funcionario_id) FILTER (WHERE tipo_usuario = 'COOPERADO'),
+                            COUNT(DISTINCT empresa_id)     FILTER (WHERE tipo_usuario = 'EMPRESA'),
+                            COUNT(DISTINCT COALESCE(funcionario_id, empresa_id)),
+                            NOW()
+                        FROM atividade_usuarios_diaria
+                        WHERE data_acesso = %s
+                        ON CONFLICT (data_referencia) DO UPDATE
+                        SET total_cooperados_ativos = EXCLUDED.total_cooperados_ativos,
+                            total_empresas_ativas   = EXCLUDED.total_empresas_ativas,
+                            total_usuarios_ativos   = EXCLUDED.total_usuarios_ativos,
+                            atualizado_em           = NOW();
+                    """, (data_referencia, data_referencia))
+
+                    total_processados += len(dados_inserir)
+
+                self.postgres_conn.commit()
+                self.redis_client.delete(chave)
+                logger.info(f"✓ DAU para {data_referencia} sincronizado: {len(dados_inserir)} registro(s).")
+
+            return total_processados
+
+        except Exception as e:
+            if self.postgres_conn:
+                self.postgres_conn.rollback()
+            logger.error(f"✗ Erro ao sincronizar DAU para PostgreSQL: {e}")
+            return 0
+
     def fechar(self) -> None:
         """Fecha conexões"""
         if self.redis_client:
